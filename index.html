@@ -1,0 +1,870 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#FF9E7A" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<title>メザミー — 早起きの相棒</title>
+<style>
+  html, body, #root { height: 100%; margin: 0; }
+  html, body { width: 100%; overscroll-behavior-y: none; }
+  body {
+    background: linear-gradient(180deg,#FFE6C2 0%,#FFD9DE 100%) fixed;
+    -webkit-font-smoothing: antialiased; color:#3a2e2a;
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  #loading { color:#a98c7a; font-size:13px; line-height:1.8; height:100%;
+             display:flex; align-items:center; justify-content:center; text-align:center;
+             padding:0 24px; white-space:pre-wrap; }
+  input, button, textarea { font-family: inherit; }
+  input, textarea { font-size:16px; }
+  ::placeholder { color:#cbb6aa; }
+
+  /* マスコット */
+  .mascot { display:block; animation: bob 3.2s ease-in-out infinite; transform-origin:50% 90%; }
+  .mascot.cheer { animation: pop .6s ease; }
+  .mascot.proud { animation: pop .6s ease; }
+  .mascot.panic { animation: shake .45s linear infinite; }
+  .mascot.sad   { animation: none; }
+  @keyframes bob { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-7px)} }
+  @keyframes shake { 0%,100%{transform:translateX(0) rotate(0)} 25%{transform:translateX(-4px) rotate(-3deg)} 75%{transform:translateX(4px) rotate(3deg)} }
+  @keyframes pop { 0%{transform:scale(.7)} 60%{transform:scale(1.12)} 100%{transform:scale(1)} }
+
+  /* 紙吹雪 */
+  .confetti { position:fixed; top:-10px; width:10px; height:14px; opacity:.9; z-index:60;
+              animation: fall linear forwards; pointer-events:none; border-radius:2px; }
+  @keyframes fall { to { transform: translateY(105vh) rotate(540deg); opacity:.2; } }
+
+  @keyframes popIn { from{transform:scale(.9); opacity:0} to{transform:scale(1); opacity:1} }
+</style>
+<script>
+  function showErr(msg){ var r=document.getElementById('loading'); if(r){ r.textContent='起動エラー:\n'+msg; } }
+  window.addEventListener('error', function(e){ showErr((e.message||'')+(e.filename?'\n'+e.filename:'')); });
+  window.addEventListener('unhandledrejection', function(e){ var r=e.reason; showErr(r&&(r.message||r)||'読み込みに失敗'); });
+</script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+</head>
+<body>
+<div id="root"><div id="loading">メザミー を読み込み中…</div></div>
+<script type="text/babel" data-type="module" data-presets="react">
+import React from "https://esm.sh/react@18.3.1";
+import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
+import { useState, useEffect, useMemo, useRef } from "https://esm.sh/react@18.3.1";
+import { Home, Map, Trophy, Settings, Share2, Download, Upload, Trash2, Check, Sun, Flame, Star, X, Bell, Sparkles, ChevronRight, RotateCcw, Copy, Ticket } from "https://esm.sh/lucide-react@0.383.0?deps=react@18.3.1";
+
+/* ============================================================
+   メザミー — 早起き版デュオリンゴ
+   相棒「コケ太」と毎朝つづける早起き習慣アプリ。
+   起きる→デイリークエスト→スコア/連続記録→Twitter共有。
+   端末内(localStorage)に保存。サーバー不要・インストール不要。
+   ============================================================ */
+
+const SAVE_KEY = "mezamy:v1";
+const GRACE = 10;            // 目標時刻からの猶予(分)
+const HASHTAG = "#メザミー #早起きチャレンジ";
+
+/* ---------- 日付/時刻ユーティリティ ---------- */
+const pad = (n)=> String(n).padStart(2,"0");
+const fmtDate = (dt)=> `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}`;
+const todayStr = ()=> fmtDate(new Date());
+const addDays = (str,n)=>{ const [y,m,d]=str.split("-").map(Number); const dt=new Date(y,m-1,d); dt.setDate(dt.getDate()+n); return fmtDate(dt); };
+const nowHM = ()=>{ const d=new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const hmToMin = (hm)=>{ const [h,m]=String(hm||"0:0").split(":").map(Number); return h*60+m; };
+const nowMin = ()=>{ const d=new Date(); return d.getHours()*60+d.getMinutes(); };
+
+/* ---------- マスター定義 ---------- */
+const MISSIONS = [
+  { id:"light",   emoji:"☀️", label:"光を浴びる" },
+  { id:"water",   emoji:"💧", label:"水を飲む" },
+  { id:"stretch", emoji:"🤸", label:"ストレッチ" },
+  { id:"face",    emoji:"🧼", label:"顔を洗う" },
+];
+
+const TITLES = [ [1,"朝活ビギナー"],[2,"ねぼすけ卒業"],[3,"朝型見習い"],[4,"さわやか名人"],[5,"朝5時の住人"],[6,"日の出マスター"],[8,"朝の伝説"] ];
+const titleFor = (level)=>{ let t=TITLES[0][1]; for(const [lv,name] of TITLES){ if(level>=lv) t=name; } return t; };
+const levelFor = (xp)=> Math.floor(Math.sqrt(Math.max(0,xp)/50))+1;
+const xpForLevel = (l)=> Math.pow(Math.max(0,l-1),2)*50;
+
+const BADGES = [
+  { id:"first",    emoji:"🐣", label:"はじめの一歩", desc:"初めて起きた",          check:(s)=> s.wakeups.length>=1 },
+  { id:"streak3",  emoji:"🔥", label:"3日坊主突破",  desc:"3日連続で早起き",       check:(s)=> s.game.bestStreak>=3 },
+  { id:"streak7",  emoji:"📅", label:"皆勤賞",       desc:"7日連続で早起き",       check:(s)=> s.game.bestStreak>=7 },
+  { id:"streak30", emoji:"👑", label:"継続の王",     desc:"30日連続で早起き",      check:(s)=> s.game.bestStreak>=30 },
+  { id:"before6",  emoji:"🌅", label:"6時前クラブ",  desc:"6時より前に起きた",     check:(s)=> s.wakeups.some(w=> hmToMin(w.wokeAt)<360) },
+  { id:"perfect",  emoji:"⭐", label:"パーフェクト", desc:"全ミッション達成",      check:(s)=> s.wakeups.some(w=> w.perfect) },
+  { id:"share",    emoji:"📣", label:"はじめての自慢", desc:"起床カードを共有",     check:(s)=> s.wakeups.some(w=> w.shared) },
+  { id:"lv5",      emoji:"🏅", label:"レベル5",      desc:"Lv.5に到達",            check:(s)=> s.game.level>=5 },
+];
+
+/* ---------- コケ太のセリフ ---------- */
+const LINES = {
+  sleepy: ["ふぁ…おはよ。今日もいける？","ねむい…でもキミが起きたならボクも起きる！","さ、“起きた！”ボタン、ポチッといこ？"],
+  happy:  ["ナイス早起き！最高だ☀️","えらい！今日のキミ、シャキッとしてるね","コケコッコー！いい朝のはじまりだ！"],
+  cheer:  ["パーフェクト！全部できたね、さすが！🎉","うおおお最高！この調子で道を進もう！","やったね！朝の達人じゃん…！"],
+  proud:  ["レベルアップ！ボクまで誇らしいよ✨","強くなったなぁ…一緒にここまで来たね"],
+  sad:    ["コケ…ちょっと残念。でも責めないよ","今日はゆっくりだったね。明日また挽回しよ？","だいじょうぶ、続けることが一番えらいんだ"],
+  panic:  ["た、大変だ！連続が消えちゃう…！はやく〜！","そろそろ起きないとボク泣いちゃう🥲","寝坊チケットもあるよ。でも今日いけそう？"],
+  ticket: ["チケットでセーフ！連続は守ったよ。次は気をつけよ〜"],
+  comeback:["戻ってきてくれた…！ボク、待ってたよ🥹","ブランクは気にしない。今日からまた1日目、いこ！"],
+  done:   ["今日はもうバッチリ！えらすぎる☀️","記録ずみ！コケ太は満足だよ〜","また明日の朝、待ってるね！"],
+};
+const pick = (arr)=> arr[Math.floor(Math.random()*arr.length)] || "";
+
+/* ---------- 保存/初期化/マイグレーション ---------- */
+const seed = ()=> ({
+  version:1,
+  profile:{ name:"", goalWakeTime:"07:00", mascot:"koketa", createdAt:todayStr(),
+            settings:{ sound:true, notify:false, shareSuffix:HASHTAG } },
+  game:{ xp:0, level:1, title:titleFor(1), streak:0, bestStreak:0, freeTickets:1,
+         pathStep:0, lastSuccessDate:null, badges:[], village:{stage:0} },
+  wakeups:[], sleepLogs:[],
+});
+const migrate = (o)=>{
+  const s = seed();
+  if(!o || typeof o!=="object") return s;
+  return {
+    ...s, ...o,
+    profile:{ ...s.profile, ...(o.profile||{}), settings:{ ...s.profile.settings, ...((o.profile||{}).settings||{}) } },
+    game:{ ...s.game, ...(o.game||{}) },
+    wakeups: Array.isArray(o.wakeups)? o.wakeups : [],
+    sleepLogs: Array.isArray(o.sleepLogs)? o.sleepLogs : [],
+  };
+};
+const load = ()=>{ try{ const r=localStorage.getItem(SAVE_KEY); return r? migrate(JSON.parse(r)) : seed(); }catch(e){ return seed(); } };
+const save = (o)=>{ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(o)); }catch(e){} };
+
+/* ---------- バッジ判定 ---------- */
+const applyBadges = (state)=>{
+  const owned = new Set(state.game.badges);
+  const fresh = [];
+  for(const b of BADGES){ if(!owned.has(b.id) && b.check(state)){ owned.add(b.id); fresh.push(b); } }
+  if(fresh.length){ state = { ...state, game:{ ...state.game, badges:[...owned] } }; }
+  return { state, fresh };
+};
+
+/* ---------- 起床を記録してスコア計算 ---------- */
+const recordWake = (state, { missions, snooze })=>{
+  const t = todayStr(), y = addDays(t,-1);
+  const wokeAt = nowHM();
+  const wokeMin = nowMin();
+  const goalMin = hmToMin(state.profile.goalWakeTime);
+  const onTime = wokeMin <= goalMin + GRACE;
+  const g = state.game;
+
+  // --- 連続記録 ---
+  let newStreak, usedTicket=false;
+  if(onTime){
+    newStreak = (g.lastSuccessDate===y) ? g.streak+1 : 1;
+  } else {
+    if(g.streak>0 && g.lastSuccessDate===y && g.freeTickets>0){ usedTicket=true; newStreak=g.streak; }
+    else { newStreak=0; }
+  }
+  const maintained = onTime || usedTicket;
+  let freeTickets = g.freeTickets - (usedTicket?1:0);
+  // チケット補充: 連続が7の倍数に乗るたび +1 (最大3)
+  if(maintained && newStreak>0 && newStreak%7===0) freeTickets = Math.min(3, freeTickets+1);
+
+  // --- スコア ---
+  const base=100;
+  const early = Math.max(0, goalMin - wokeMin);
+  const streakBonus = Math.min(newStreak,30)*10;
+  const missionBonus = missions.length*20;
+  const snoozePenalty = (snooze||0)*15;
+  const score = Math.max(0, base + early + streakBonus + missionBonus - snoozePenalty);
+  const perfect = onTime && missions.length===MISSIONS.length;
+
+  const xp = g.xp + score;
+  const oldLevel = g.level;
+  const level = levelFor(xp);
+  const leveledUp = level>oldLevel;
+
+  const wake = { date:t, wokeAt, goalAt:state.profile.goalWakeTime, snooze:snooze||0,
+                 missions, perfect, score, onTime, shared:false };
+
+  let next = {
+    ...state,
+    game:{ ...g, xp, level, title:titleFor(level),
+           streak:newStreak, bestStreak:Math.max(g.bestStreak,newStreak),
+           freeTickets, pathStep:g.pathStep+1,
+           lastSuccessDate: maintained ? t : g.lastSuccessDate,
+           village:{ stage: Math.floor((g.pathStep+1)/5) } },
+    wakeups:[ ...state.wakeups.filter(w=>w.date!==t), wake ],
+  };
+  const { state:withBadges, fresh } = applyBadges(next);
+
+  // 結果の顔とセリフ
+  let face = "happy", line;
+  if(usedTicket){ face="panic"; line=pick(LINES.ticket); }
+  else if(!onTime){ face="sad"; line=pick(LINES.sad); }
+  else if(perfect || newStreak>g.streak){ face="cheer"; line=pick(LINES.cheer); }
+  else { face="happy"; line=pick(LINES.happy); }
+
+  return { state:withBadges, result:{ wake, score, onTime, perfect, usedTicket, leveledUp, level, newStreak, fresh, face, line, prevStreak:g.streak } };
+};
+
+/* ============================================================
+   マスコット（コケ太）— インラインSVGで表情差分
+   ============================================================ */
+function Mascot({ state="happy", size=170 }){
+  const ink="#2b2320", combCol="#FF5A5F", beakCol="#FFB02E";
+  const Eye = ({cx})=>{
+    if(state==="sleepy") return <path d={`M${cx-5} 50 q5 4 10 0`} stroke={ink} strokeWidth="2.4" fill="none" strokeLinecap="round"/>;
+    if(state==="sad")    return <path d={`M${cx-5} 52 q5 -4 10 0`} stroke={ink} strokeWidth="2.4" fill="none" strokeLinecap="round"/>;
+    if(state==="panic")  return <g><circle cx={cx} cy="50" r="6" fill="#fff" stroke={ink} strokeWidth="1.6"/><circle cx={cx} cy="51" r="2.4" fill={ink}/></g>;
+    if(state==="proud" || state==="cheer") return <g><circle cx={cx} cy="50" r="6" fill="#fff" stroke={ink} strokeWidth="1.6"/><circle cx={cx} cy="51" r="3" fill={ink}/><circle cx={cx+1.8} cy="48.6" r="1.4" fill="#fff"/></g>;
+    return <g><circle cx={cx} cy="50" r="4.4" fill={ink}/><circle cx={cx+1.4} cy="48.8" r="1.2" fill="#fff"/></g>;
+  };
+  const beakOpen = state==="cheer" || state==="panic";
+  return (
+    <div className={`mascot ${state}`} style={{width:size,height:size}}>
+      <svg viewBox="0 0 100 108" width={size} height={size} aria-hidden="true">
+        {/* 尾 */}
+        <path d="M74 64 q22 -6 18 -26 q-4 16 -20 14 Z" fill="#FFC24B"/>
+        <path d="M76 70 q22 2 22 -16 q-6 14 -22 8 Z" fill="#FF8A4C"/>
+        {/* トサカ */}
+        <circle cx="40" cy="22" r="6.5" fill={combCol}/>
+        <circle cx="50" cy="17" r="7.5" fill={combCol}/>
+        <circle cx="60" cy="22" r="6.5" fill={combCol}/>
+        {/* 体 */}
+        <ellipse cx="50" cy="58" rx="31" ry="30" fill="#FFF3D9" stroke="#F4D9A8" strokeWidth="1.5"/>
+        {/* お腹 */}
+        <ellipse cx="50" cy="66" rx="18" ry="16" fill="#FFFDF6"/>
+        {/* 羽 */}
+        <ellipse cx="24" cy="60" rx="8" ry="13" fill="#FCE9BE" transform="rotate(-12 24 60)"/>
+        {/* ほっぺ */}
+        <circle cx="33" cy="58" r="5" fill="#FFC7C2" opacity=".75"/>
+        <circle cx="67" cy="58" r="5" fill="#FFC7C2" opacity=".75"/>
+        {/* 目 */}
+        <Eye cx={41}/>
+        <Eye cx={59}/>
+        {/* くちばし */}
+        {beakOpen ? (
+          <g>
+            <polygon points="44,55 56,55 50,60" fill={beakCol}/>
+            <polygon points="45,61 55,61 50,67" fill="#E8912A"/>
+          </g>
+        ) : (
+          <polygon points="44,57 56,57 50,64" fill={beakCol}/>
+        )}
+        {/* 肉垂 */}
+        <ellipse cx="50" cy="69" rx="4" ry="6" fill={combCol}/>
+        {/* 脚 */}
+        <line x1="42" y1="86" x2="42" y2="98" stroke={beakCol} strokeWidth="3" strokeLinecap="round"/>
+        <line x1="58" y1="86" x2="58" y2="98" stroke={beakCol} strokeWidth="3" strokeLinecap="round"/>
+        <path d="M37 99 h10 M53 99 h10" stroke={beakCol} strokeWidth="3" strokeLinecap="round"/>
+        {/* 状態の装飾 */}
+        {state==="sleepy" && <text x="74" y="34" fontSize="12" fill="#9aa">z z</text>}
+        {state==="panic"  && <text x="74" y="46" fontSize="14">💦</text>}
+        {state==="sad"    && <circle cx="36" cy="58" r="2.4" fill="#7FC9FF"/>}
+        {(state==="cheer"||state==="proud") && <text x="14" y="30" fontSize="13">✨</text>}
+      </svg>
+    </div>
+  );
+}
+
+/* ---------- 紙吹雪 ---------- */
+function burstConfetti(){
+  const colors=["#FF8A4C","#FFC24B","#FF6F91","#7FC9FF","#9BE15D"];
+  for(let i=0;i<70;i++){
+    const el=document.createElement("div");
+    el.className="confetti";
+    el.style.left=Math.random()*100+"vw";
+    el.style.background=colors[i%colors.length];
+    el.style.animationDuration=(1.6+Math.random()*1.4)+"s";
+    el.style.transform=`rotate(${Math.random()*360}deg)`;
+    document.body.appendChild(el);
+    setTimeout(()=>el.remove(),3200);
+  }
+}
+
+/* ---------- 効果音（短いビープ, WebAudio） ---------- */
+function beep(on){
+  if(!on) return;
+  try{
+    const ac=new (window.AudioContext||window.webkitAudioContext)();
+    const notes=[523,659,784,1046];
+    notes.forEach((f,i)=>{
+      const o=ac.createOscillator(), g=ac.createGain();
+      o.type="triangle"; o.frequency.value=f;
+      o.connect(g); g.connect(ac.destination);
+      const t=ac.currentTime+i*0.10;
+      g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.18,t+0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001,t+0.18);
+      o.start(t); o.stop(t+0.2);
+    });
+  }catch(e){}
+}
+
+/* ============================================================
+   共有カード（Canvas）
+   ============================================================ */
+const buildShareText = (s, wake)=>{
+  return `おはよう！今日は${wake.wokeAt}に起きた☀️ コケ太も大喜び🐔\n🔥${s.game.streak}日連続  Lv.${s.game.level}「${s.game.title}」  スコア${wake.score}pt\n${s.profile.settings.shareSuffix||HASHTAG}`;
+};
+function roundRect(ctx,x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+function drawCard(canvas, s, wake){
+  const W=1080,H=1080; canvas.width=W; canvas.height=H;
+  const ctx=canvas.getContext("2d");
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,"#FFC56B"); g.addColorStop(.55,"#FF9E7A"); g.addColorStop(1,"#FF7EA6");
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle="rgba(255,255,255,.85)"; ctx.beginPath(); ctx.arc(W*0.5,H*0.30,120,0,7); ctx.fill();
+  ctx.textAlign="center";
+  ctx.fillStyle="#FF7043"; ctx.font="bold 72px sans-serif"; ctx.fillText("おはよう！", W/2, H*0.165);
+  ctx.font="140px sans-serif"; ctx.fillText("🐔", W/2, H*0.345);
+  roundRect(ctx,80,H*0.44,W-160,H*0.50,44); ctx.fillStyle="rgba(255,255,255,.95)"; ctx.fill();
+  ctx.fillStyle="#3a2e2a"; ctx.font="bold 150px sans-serif"; ctx.fillText(wake.wokeAt, W/2, H*0.605);
+  ctx.fillStyle="#9a7d6f"; ctx.font="bold 44px sans-serif"; ctx.fillText("に起きた ☀️", W/2, H*0.66);
+  ctx.fillStyle="#FF5A5F"; ctx.font="bold 56px sans-serif"; ctx.fillText("🔥 "+s.game.streak+"日連続", W/2, H*0.745);
+  ctx.fillStyle="#3a2e2a"; ctx.font="bold 46px sans-serif"; ctx.fillText("Lv."+s.game.level+"「"+s.game.title+"」", W/2, H*0.805);
+  ctx.fillStyle="#FF8A4C"; ctx.font="bold 62px sans-serif"; ctx.fillText("スコア "+wake.score+"pt", W/2, H*0.885);
+  ctx.fillStyle="#fff"; ctx.font="bold 34px sans-serif"; ctx.fillText(s.profile.settings.shareSuffix||HASHTAG, W/2, H*0.965);
+}
+
+function ShareCardModal({ state, wake, onClose, onShared }){
+  const ref=useRef(null);
+  useEffect(()=>{ if(ref.current) drawCard(ref.current, state, wake); },[]);
+  const text = buildShareText(state, wake);
+
+  const doShare = async ()=>{
+    const canvas=ref.current; if(!canvas) return;
+    canvas.toBlob(async (blob)=>{
+      const file=new File([blob],"mezamy.png",{type:"image/png"});
+      if(navigator.canShare && navigator.canShare({files:[file]})){
+        try{ await navigator.share({ files:[file], text }); onShared(); return; }catch(e){ if(e&&e.name==="AbortError"){ return; } }
+      }
+      // フォールバック: Twitter Intent + 画像DL
+      window.open("https://twitter.com/intent/tweet?text="+encodeURIComponent(text),"_blank");
+      const a=document.createElement("a"); a.href=canvas.toDataURL("image/png"); a.download="mezamy.png"; a.click();
+      onShared();
+    },"image/png");
+  };
+  const saveImg = ()=>{ const c=ref.current; const a=document.createElement("a"); a.href=c.toDataURL("image/png"); a.download="mezamy.png"; a.click(); onShared(); };
+  const copyTxt = async ()=>{ try{ await navigator.clipboard.writeText(text); alert("テキストをコピーしました"); }catch(e){ alert(text); } };
+
+  return (
+    <div style={S.overlay} onClick={onClose}>
+      <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <b style={{fontSize:17}}>起床カード</b>
+          <button style={S.iconBtn} onClick={onClose}><X size={20}/></button>
+        </div>
+        <canvas ref={ref} style={{width:"100%",borderRadius:16,display:"block",boxShadow:"0 6px 20px rgba(0,0,0,.12)"}}/>
+        <div style={{display:"grid",gap:10,marginTop:14}}>
+          <button style={S.primary} onClick={doShare}><Share2 size={18}/> Twitterに自慢する</button>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            <button style={S.ghost} onClick={saveImg}><Download size={16}/> 画像を保存</button>
+            <button style={S.ghost} onClick={copyTxt}><Copy size={16}/> 文をコピー</button>
+          </div>
+        </div>
+        <p style={{fontSize:11,color:"#a98c7a",marginTop:10,lineHeight:1.6}}>
+          ※スマホは画像つきで共有されます。PCではツイート画面が開き、画像は保存して添付してください。
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   画面: 初回設定
+   ============================================================ */
+function Setup({ onDone }){
+  const [name,setName]=useState("");
+  const [goal,setGoal]=useState("07:00");
+  return (
+    <div style={{padding:"32px 20px",textAlign:"center",animation:"popIn .4s ease"}}>
+      <Mascot state="happy" size={150}/>
+      <h1 style={{fontSize:24,margin:"12px 0 4px"}}>メザミー</h1>
+      <p style={{color:"#9a7d6f",margin:"0 0 22px",lineHeight:1.7}}>やぁ！ボク、コケ太🐔<br/>キミの早起きの相棒だよ。<br/>いっしょに“朝型”を目指そう！</p>
+      <div style={{...S.card,textAlign:"left",display:"grid",gap:16}}>
+        <label style={S.field}><span>ニックネーム</span>
+          <input style={S.input} value={name} onChange={e=>setName(e.target.value)} placeholder="例：ゆき" maxLength={12}/>
+        </label>
+        <label style={S.field}><span>起きたい時間（目標）</span>
+          <input style={S.input} type="time" value={goal} onChange={e=>setGoal(e.target.value)}/>
+        </label>
+      </div>
+      <button style={{...S.primary,marginTop:20,width:"100%",justifyContent:"center"}}
+        onClick={()=> onDone({ name:name.trim()||"あなた", goal })}>
+        はじめる <ChevronRight size={18}/>
+      </button>
+    </div>
+  );
+}
+
+/* ============================================================
+   画面: ホーム
+   ============================================================ */
+function HomeScreen({ state, doWake, openShare }){
+  const t=todayStr();
+  const todayWake = state.wakeups.find(w=>w.date===t);
+  const [phase,setPhase]=useState(todayWake? "done":"idle"); // idle | quest | result | done
+  const [missions,setMissions]=useState([]);
+  const [snooze,setSnooze]=useState(0);
+  const [result,setResult]=useState(null);
+
+  useEffect(()=>{ if(todayWake && phase==="idle") setPhase("done"); },[todayWake]);
+
+  const late = nowMin() > hmToMin(state.profile.goalWakeTime)+GRACE;
+  const idleFace = late ? "panic" : "sleepy";
+  const idleLine = late ? pick(LINES.panic) : pick(LINES.sleepy);
+
+  const toggleMission=(id)=> setMissions(m=> m.includes(id)? m.filter(x=>x!==id):[...m,id]);
+
+  const finish=()=>{
+    const { result } = doWake({ missions, snooze });
+    setResult(result);
+    setPhase("result");
+    burstConfetti();
+    beep(state.profile.settings.sound);
+  };
+
+  /* ---- 起床済み（done） ---- */
+  if(phase==="done" && todayWake){
+    return (
+      <div style={S.screen}>
+        <Mascot state="happy" size={150}/>
+        <Bubble>{pick(LINES.done)}</Bubble>
+        <StatRow state={state}/>
+        <div style={{...S.card,textAlign:"center"}}>
+          <div style={{color:"#9a7d6f",fontSize:13}}>今日は <b>{todayWake.wokeAt}</b> に起床</div>
+          <div style={{fontSize:30,fontWeight:800,color:"#FF8A4C",margin:"6px 0"}}>{todayWake.score} pt</div>
+          <button style={{...S.primary,width:"100%",justifyContent:"center"}} onClick={()=>openShare(todayWake)}>
+            <Share2 size={18}/> もう一度 自慢する
+          </button>
+        </div>
+        <p style={{textAlign:"center",color:"#b09a8d",fontSize:12}}>また明日の朝、コケ太が待ってるよ🐔</p>
+      </div>
+    );
+  }
+
+  /* ---- 結果（result） ---- */
+  if(phase==="result" && result){
+    return (
+      <div style={S.screen}>
+        <Mascot state={result.face} size={160}/>
+        <Bubble>{result.line}</Bubble>
+        <div style={{...S.card,textAlign:"center"}}>
+          <div style={{fontSize:13,color:"#9a7d6f"}}>今日のスコア</div>
+          <div style={{fontSize:44,fontWeight:800,color:"#FF8A4C",lineHeight:1.1}}>+{result.score}<span style={{fontSize:18}}> pt</span></div>
+          <div style={{display:"flex",justifyContent:"center",gap:14,marginTop:8,flexWrap:"wrap"}}>
+            <Pill><Flame size={14}/> {result.newStreak}日連続</Pill>
+            {result.leveledUp && <Pill hot>Lv.{result.level} に昇格！</Pill>}
+            {result.usedTicket && <Pill><Ticket size={14}/> チケット使用</Pill>}
+          </div>
+          {result.fresh.length>0 && (
+            <div style={{marginTop:12,background:"#FFF6E9",borderRadius:14,padding:"10px 12px"}}>
+              <div style={{fontSize:12,color:"#9a7d6f",marginBottom:6}}>🎉 新しいバッジ！</div>
+              <div style={{display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap"}}>
+                {result.fresh.map(b=> <span key={b.id} style={{fontSize:13}}>{b.emoji} {b.label}</span>)}
+              </div>
+            </div>
+          )}
+        </div>
+        <button style={{...S.primary,width:"100%",justifyContent:"center"}} onClick={()=>openShare(result.wake)}>
+          <Share2 size={18}/> 起床カードを作って自慢
+        </button>
+        <button style={{...S.ghost,width:"100%",justifyContent:"center"}} onClick={()=>setPhase("done")}>とじる</button>
+      </div>
+    );
+  }
+
+  /* ---- クエスト（quest） ---- */
+  if(phase==="quest"){
+    return (
+      <div style={S.screen}>
+        <Mascot state="happy" size={140}/>
+        <Bubble>起きたね！朝のミッション、できたものを教えて☀️</Bubble>
+        <div style={{...S.card}}>
+          <div style={{fontSize:13,color:"#9a7d6f",marginBottom:8}}>デイリークエスト（任意・1つ +20pt）</div>
+          <div style={{display:"grid",gap:8}}>
+            {MISSIONS.map(m=>{
+              const on=missions.includes(m.id);
+              return (
+                <button key={m.id} onClick={()=>toggleMission(m.id)}
+                  style={{...S.missionRow, ...(on? S.missionOn:{})}}>
+                  <span style={{fontSize:20}}>{m.emoji}</span>
+                  <span style={{flex:1,textAlign:"left"}}>{m.label}</span>
+                  <span style={{width:24,height:24,borderRadius:8,display:"grid",placeItems:"center",
+                    background:on?"#FF8A4C":"#eee",color:"#fff"}}>{on && <Check size={16}/>}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:14}}>
+            <span style={{fontSize:13,color:"#9a7d6f"}}>二度寝した回数</span>
+            <div style={{display:"flex",alignItems:"center",gap:12}}>
+              <button style={S.stepBtn} onClick={()=>setSnooze(s=>Math.max(0,s-1))}>−</button>
+              <b style={{minWidth:20,textAlign:"center"}}>{snooze}</b>
+              <button style={S.stepBtn} onClick={()=>setSnooze(s=>s+1)}>＋</button>
+            </div>
+          </div>
+        </div>
+        <button style={{...S.primary,width:"100%",justifyContent:"center"}} onClick={finish}>
+          <Check size={18}/> 完了！スコアを見る
+        </button>
+      </div>
+    );
+  }
+
+  /* ---- 待機（idle） ---- */
+  return (
+    <div style={S.screen}>
+      <StatRow state={state}/>
+      <Mascot state={idleFace} size={160}/>
+      <Bubble>{idleLine}</Bubble>
+      <button onClick={()=>setPhase("quest")} style={S.wakeBtn}>
+        <Sun size={30}/>
+        <span>起きた！</span>
+      </button>
+      <p style={{textAlign:"center",color:"#b09a8d",fontSize:12,marginTop:4}}>
+        目標 {state.profile.goalWakeTime} ・ 今 {nowHM()}
+      </p>
+    </div>
+  );
+}
+
+function StatRow({ state }){
+  const g=state.game;
+  return (
+    <div style={{display:"flex",gap:10,width:"100%"}}>
+      <MiniCard icon={<Flame size={18} color="#FF5A5F"/>} label="連続" value={g.streak+"日"}/>
+      <MiniCard icon={<Star size={18} color="#FFB02E"/>} label="レベル" value={"Lv."+g.level}/>
+      <MiniCard icon={<Ticket size={18} color="#FF8A4C"/>} label="チケット" value={g.freeTickets+"枚"}/>
+    </div>
+  );
+}
+const MiniCard=({icon,label,value})=>(
+  <div style={{flex:1,background:"#fff",borderRadius:16,padding:"10px 6px",textAlign:"center",boxShadow:"0 3px 10px rgba(0,0,0,.05)"}}>
+    <div style={{display:"flex",justifyContent:"center",marginBottom:2}}>{icon}</div>
+    <div style={{fontSize:11,color:"#a98c7a"}}>{label}</div>
+    <div style={{fontWeight:800,fontSize:15}}>{value}</div>
+  </div>
+);
+const Bubble=({children})=>(
+  <div style={{background:"#fff",borderRadius:18,padding:"12px 16px",position:"relative",
+    boxShadow:"0 4px 14px rgba(0,0,0,.06)",maxWidth:320,textAlign:"center",lineHeight:1.6,fontSize:14}}>
+    {children}
+  </div>
+);
+const Pill=({children,hot})=>(
+  <span style={{display:"inline-flex",alignItems:"center",gap:5,background:hot?"#FFE3D0":"#FFF1E2",
+    color:hot?"#E8612A":"#9a7d6f",fontWeight:700,fontSize:12,padding:"5px 10px",borderRadius:999}}>{children}</span>
+);
+
+/* ============================================================
+   画面: 早起きの道
+   ============================================================ */
+function PathScreen({ state }){
+  const step=state.game.pathStep;
+  const total=Math.max(20, Math.ceil((step+6)/10)*10);
+  const nodes=[];
+  for(let i=total;i>=1;i--) nodes.push(i);
+  return (
+    <div style={{padding:"8px 0 12px"}}>
+      <h2 style={S.h2}>早起きの道</h2>
+      <p style={{textAlign:"center",color:"#9a7d6f",fontSize:13,margin:"0 0 14px"}}>
+        いま <b>{step}</b> 歩目 ・ 1日 = 1歩
+      </p>
+      <div style={{position:"relative",display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+        {nodes.map(i=>{
+          const done=i<=step, here=i===step;
+          const checkpoint=i%5===0;
+          const offset=(i%2===0? -54: 54);
+          return (
+            <div key={i} style={{transform:`translateX(${offset}px)`,padding:"4px 0"}}>
+              <div style={{
+                width: here?60: checkpoint?52:40, height: here?60: checkpoint?52:40,
+                borderRadius:"50%", display:"grid",placeItems:"center",
+                fontSize: checkpoint?20:13, fontWeight:800,
+                color: done?"#fff":"#c9b6a8",
+                background: here? "linear-gradient(135deg,#FF8A4C,#FF6F91)" : done? "#FFB36B" : "#fff",
+                boxShadow: here?"0 6px 18px rgba(255,111,145,.5)":"0 3px 8px rgba(0,0,0,.06)",
+                border: done?"none":"2px dashed #EAD7C6",
+              }}>
+                {checkpoint ? (done? "⭐":"☆") : (here? "🐔" : (done? "✓" : i))}
+              </div>
+            </div>
+          );
+        })}
+        <div style={{transform:"translateX(0)",marginTop:6,color:"#b09a8d",fontSize:12}}>スタート</div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   画面: 実績
+   ============================================================ */
+function TrophyScreen({ state, openShare }){
+  const g=state.game;
+  const xpInto = g.xp - xpForLevel(g.level);
+  const xpNeed = xpForLevel(g.level+1) - xpForLevel(g.level);
+  const pct = Math.min(100, Math.round(xpInto/xpNeed*100));
+  const owned=new Set(g.badges);
+
+  // 直近14日カレンダー
+  const days=[]; for(let i=13;i>=0;i--) days.push(addDays(todayStr(),-i));
+  const wmap={}; state.wakeups.forEach(w=> wmap[w.date]=w);
+  const past=[...state.wakeups].reverse().slice(0,8);
+
+  return (
+    <div style={{padding:"8px 0 12px"}}>
+      <h2 style={S.h2}>実績</h2>
+
+      <div style={{...S.card,textAlign:"center"}}>
+        <div style={{fontSize:13,color:"#9a7d6f"}}>Lv.{g.level}</div>
+        <div style={{fontWeight:800,fontSize:20,margin:"2px 0 10px"}}>「{g.title}」</div>
+        <div style={{height:12,background:"#F1E2D4",borderRadius:999,overflow:"hidden"}}>
+          <div style={{width:pct+"%",height:"100%",background:"linear-gradient(90deg,#FFC24B,#FF8A4C)"}}/>
+        </div>
+        <div style={{fontSize:11,color:"#a98c7a",marginTop:6}}>次のレベルまで {xpNeed-xpInto} XP（累計 {g.xp} XP）</div>
+        <div style={{display:"flex",justifyContent:"center",gap:18,marginTop:12}}>
+          <span style={{fontSize:13}}>🔥 連続 <b>{g.streak}</b>日</span>
+          <span style={{fontSize:13}}>🏆 最高 <b>{g.bestStreak}</b>日</span>
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>バッジ（{owned.size}/{BADGES.length}）</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginTop:6}}>
+          {BADGES.map(b=>{
+            const has=owned.has(b.id);
+            return (
+              <div key={b.id} title={b.desc} style={{textAlign:"center",opacity:has?1:.35}}>
+                <div style={{fontSize:26}}>{has? b.emoji : "🔒"}</div>
+                <div style={{fontSize:10,color:"#9a7d6f",lineHeight:1.3,marginTop:2}}>{b.label}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>この2週間</div>
+        <div style={{display:"flex",gap:5,marginTop:8,flexWrap:"wrap"}}>
+          {days.map(d=>{
+            const w=wmap[d];
+            const col = !w? "#EFE2D5" : w.onTime? "#9BE15D" : "#FFC24B";
+            return <div key={d} title={d} style={{width:18,height:18,borderRadius:6,background:col}}/>;
+          })}
+        </div>
+        <div style={{fontSize:11,color:"#a98c7a",marginTop:8}}>🟩 時間内 ・ 🟨 ちょい遅 ・ ⬜ 記録なし</div>
+      </div>
+
+      {past.length>0 && (
+        <div style={S.card}>
+          <div style={S.cardTitle}>起床の記録</div>
+          <div style={{display:"grid",gap:8,marginTop:6}}>
+            {past.map(w=>(
+              <div key={w.date} style={{display:"flex",alignItems:"center",gap:10,fontSize:13}}>
+                <span style={{color:"#b09a8d",width:78}}>{w.date.slice(5)}</span>
+                <b style={{width:48}}>{w.wokeAt}</b>
+                <span style={{color:"#FF8A4C",fontWeight:700,width:60}}>{w.score}pt</span>
+                <span style={{flex:1}}>{w.perfect?"⭐":""}{w.onTime?"":"💤"}</span>
+                <button style={S.miniShare} onClick={()=>openShare(w)}><Share2 size={14}/></button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   画面: 設定
+   ============================================================ */
+function SettingsScreen({ state, setState }){
+  const fileRef=useRef(null);
+  const set=(patch)=> setState(s=>({...s, profile:{...s.profile, ...patch}}));
+  const setOpt=(patch)=> setState(s=>({...s, profile:{...s.profile, settings:{...s.profile.settings, ...patch}}}));
+
+  const askNotify=async ()=>{
+    if(!("Notification" in window)){ alert("この端末は通知に対応していません"); return; }
+    const p=await Notification.requestPermission();
+    setOpt({ notify: p==="granted" });
+    if(p==="granted") new Notification("メザミー", { body:"通知をオンにしたよ！朝はコケ太が起こしに来るね🐔" });
+  };
+  const exportJSON=()=>{
+    const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="mezamy-backup.json"; a.click();
+  };
+  const importJSON=(e)=>{
+    const f=e.target.files[0]; if(!f) return;
+    const r=new FileReader();
+    r.onload=()=>{ try{ setState(migrate(JSON.parse(r.result))); alert("読み込みました"); }catch(err){ alert("読み込みに失敗しました"); } };
+    r.readAsText(f);
+  };
+  const resetAll=()=>{ if(confirm("本当に全データを削除しますか？（元に戻せません）")){ setState(seed()); } };
+
+  return (
+    <div style={{padding:"8px 0 12px"}}>
+      <h2 style={S.h2}>設定</h2>
+
+      <div style={S.card}>
+        <label style={S.field}><span>ニックネーム</span>
+          <input style={S.input} value={state.profile.name} onChange={e=>set({name:e.target.value})} maxLength={12}/>
+        </label>
+        <label style={{...S.field,marginTop:14}}><span>起きたい時間（目標）</span>
+          <input style={S.input} type="time" value={state.profile.goalWakeTime} onChange={e=>set({goalWakeTime:e.target.value})}/>
+        </label>
+      </div>
+
+      <div style={S.card}>
+        <ToggleRow label="効果音" on={state.profile.settings.sound} onTap={()=>setOpt({sound:!state.profile.settings.sound})}/>
+        <div style={{height:1,background:"#F2E6DA",margin:"4px 0"}}/>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 0"}}>
+          <span style={{fontSize:14}}>朝の通知（コケ太のリマインド）</span>
+          <button style={S.ghost} onClick={askNotify}><Bell size={15}/> {state.profile.settings.notify?"オン":"許可する"}</button>
+        </div>
+        <p style={{fontSize:11,color:"#b09a8d",margin:"2px 0 0",lineHeight:1.6}}>
+          ※Webアプリのため、アプリを閉じている間の通知は端末により届かないことがあります。
+        </p>
+      </div>
+
+      <div style={S.card}>
+        <label style={S.field}><span>共有時のハッシュタグ・ひとこと</span>
+          <input style={S.input} value={state.profile.settings.shareSuffix}
+            onChange={e=>setOpt({shareSuffix:e.target.value})}/>
+        </label>
+        <a href={"https://twitter.com/search?q="+encodeURIComponent("#メザミー")} target="_blank"
+           style={{...S.ghost,marginTop:12,textDecoration:"none",justifyContent:"center"}}>
+          <Sparkles size={15}/> #メザミー の投稿を見る
+        </a>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>バックアップ</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:8}}>
+          <button style={S.ghost} onClick={exportJSON}><Download size={15}/> 書き出し</button>
+          <button style={S.ghost} onClick={()=>fileRef.current.click()}><Upload size={15}/> 読み込み</button>
+          <input ref={fileRef} type="file" accept="application/json" onChange={importJSON} style={{display:"none"}}/>
+        </div>
+      </div>
+
+      <button style={{...S.ghost,width:"100%",justifyContent:"center",color:"#E0524E",marginTop:4}} onClick={resetAll}>
+        <Trash2 size={15}/> 全データを削除
+      </button>
+
+      <p style={{fontSize:11,color:"#b09a8d",lineHeight:1.7,marginTop:16,padding:"0 4px"}}>
+        データは端末内にのみ保存され、共有はあなたが押したときだけTwitterへ送られます。本アプリは医療目的ではありません。
+        強い起床困難・立ちくらみ・いびき・気分の落ち込みが続く場合は、医療機関への相談を検討してください。
+      </p>
+      <p style={{textAlign:"center",fontSize:11,color:"#c9b6a8",marginTop:8}}>メザミー — 早起きの相棒コケ太と 🐔</p>
+    </div>
+  );
+}
+const ToggleRow=({label,on,onTap})=>(
+  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 0"}}>
+    <span style={{fontSize:14}}>{label}</span>
+    <button onClick={onTap} style={{width:50,height:30,borderRadius:999,border:"none",cursor:"pointer",
+      background:on?"#FF8A4C":"#E2D3C5",position:"relative",transition:".2s"}}>
+      <span style={{position:"absolute",top:3,left:on?23:3,width:24,height:24,borderRadius:"50%",background:"#fff",transition:".2s"}}/>
+    </button>
+  </div>
+);
+
+/* ============================================================
+   App
+   ============================================================ */
+function App(){
+  const [state,setState]=useState(load);
+  const [tab,setTab]=useState("home");
+  const [share,setShare]=useState(null); // wake object or null
+
+  useEffect(()=>{ save(state); },[state]);
+
+  const doWake=(payload)=>{
+    let res;
+    setState(s=>{ const { state:ns, result }=recordWake(s,payload); res=result; return ns; });
+    return { result: res };
+  };
+  const openShare=(wake)=> setShare(wake);
+  const markShared=()=>{
+    setState(s=>{
+      const date=share.date;
+      const wakeups=s.wakeups.map(w=> w.date===date? {...w, shared:true}:w);
+      let ns={...s, wakeups};
+      ns=applyBadges(ns).state;
+      return ns;
+    });
+    setShare(null);
+  };
+
+  if(!state.profile.name){
+    return <Shell><Setup onDone={({name,goal})=> setState(s=>({...s, profile:{...s.profile, name, goalWakeTime:goal, createdAt:todayStr()}}))}/></Shell>;
+  }
+
+  return (
+    <Shell>
+      <div style={{padding:"14px 16px 92px",maxWidth:480,margin:"0 auto",minHeight:"100%"}}>
+        <header style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:20}}>🐔</span>
+            <b style={{fontSize:18}}>メザミー</b>
+          </div>
+          <span style={{fontSize:12,color:"#a98c7a"}}>こんにちは、{state.profile.name}さん</span>
+        </header>
+
+        {tab==="home"   && <HomeScreen state={state} doWake={doWake} openShare={openShare}/>}
+        {tab==="path"   && <PathScreen state={state}/>}
+        {tab==="trophy" && <TrophyScreen state={state} openShare={openShare}/>}
+        {tab==="settings"&& <SettingsScreen state={state} setState={setState}/>}
+      </div>
+
+      <nav style={S.tabbar}>
+        {[["home","ホーム",Home],["path","道",Map],["trophy","実績",Trophy],["settings","設定",Settings]].map(([id,label,Icon])=>(
+          <button key={id} onClick={()=>setTab(id)} style={{...S.tab, color: tab===id?"#FF6F4C":"#bba"}}>
+            <Icon size={22}/><span style={{fontSize:10,marginTop:2}}>{label}</span>
+          </button>
+        ))}
+      </nav>
+
+      {share && <ShareCardModal state={state} wake={share} onClose={()=>setShare(null)} onShared={markShared}/>}
+    </Shell>
+  );
+}
+const Shell=({children})=>(
+  <div style={{minHeight:"100%",maxWidth:480,margin:"0 auto",position:"relative"}}>{children}</div>
+);
+
+/* ---------- スタイル ---------- */
+const S={
+  screen:{ display:"flex",flexDirection:"column",alignItems:"center",gap:14,padding:"6px 0" },
+  card:{ background:"#fff",borderRadius:20,padding:16,width:"100%",boxShadow:"0 4px 16px rgba(0,0,0,.05)",marginTop:14 },
+  cardTitle:{ fontSize:13,color:"#9a7d6f",fontWeight:700 },
+  h2:{ fontSize:20,textAlign:"center",margin:"6px 0 10px" },
+  field:{ display:"grid",gap:6,fontSize:13,color:"#9a7d6f" },
+  input:{ border:"2px solid #F0E0D0",borderRadius:12,padding:"10px 12px",fontSize:16,outline:"none",background:"#FFFCF8" },
+  primary:{ display:"inline-flex",alignItems:"center",justifyContent:"center",gap:8,background:"linear-gradient(135deg,#FF8A4C,#FF6F91)",
+            color:"#fff",border:"none",borderRadius:14,padding:"14px 18px",fontSize:16,fontWeight:800,cursor:"pointer",
+            boxShadow:"0 6px 16px rgba(255,111,145,.35)" },
+  ghost:{ display:"inline-flex",alignItems:"center",justifyContent:"center",gap:7,background:"#FFF1E2",color:"#9a6b4f",
+          border:"none",borderRadius:12,padding:"11px 14px",fontSize:14,fontWeight:700,cursor:"pointer" },
+  iconBtn:{ background:"#F4ECE3",border:"none",borderRadius:10,padding:6,cursor:"pointer",color:"#9a7d6f",display:"grid",placeItems:"center" },
+  wakeBtn:{ marginTop:6,width:200,height:200,borderRadius:"50%",border:"none",cursor:"pointer",color:"#fff",
+            background:"radial-gradient(circle at 38% 32%,#FFD98A,#FF8A4C 60%,#FF6F91)",
+            boxShadow:"0 12px 34px rgba(255,138,76,.5)",display:"flex",flexDirection:"column",alignItems:"center",
+            justifyContent:"center",gap:8,fontSize:30,fontWeight:900 },
+  missionRow:{ display:"flex",alignItems:"center",gap:10,background:"#FFFCF8",border:"2px solid #F2E6DA",
+               borderRadius:14,padding:"10px 12px",fontSize:14,cursor:"pointer",fontWeight:600,color:"#3a2e2a" },
+  missionOn:{ borderColor:"#FFB36B",background:"#FFF4E6" },
+  stepBtn:{ width:34,height:34,borderRadius:10,border:"none",background:"#FFF1E2",color:"#9a6b4f",fontSize:20,fontWeight:800,cursor:"pointer" },
+  miniShare:{ background:"#FFF1E2",border:"none",borderRadius:9,padding:6,color:"#FF8A4C",cursor:"pointer",display:"grid",placeItems:"center" },
+  tabbar:{ position:"fixed",left:"50%",transform:"translateX(-50%)",bottom:0,width:"100%",maxWidth:480,
+           background:"rgba(255,255,255,.96)",backdropFilter:"blur(8px)",borderTop:"1px solid #F2E2D2",
+           display:"flex",padding:"8px 0 calc(8px + env(safe-area-inset-bottom))",zIndex:30 },
+  tab:{ flex:1,background:"none",border:"none",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center" },
+  overlay:{ position:"fixed",inset:0,background:"rgba(40,28,24,.5)",zIndex:50,display:"flex",alignItems:"flex-end",justifyContent:"center" },
+  sheet:{ background:"#FBF3EA",width:"100%",maxWidth:480,borderRadius:"22px 22px 0 0",padding:"16px 16px calc(20px + env(safe-area-inset-bottom))",
+          maxHeight:"92vh",overflowY:"auto",animation:"popIn .25s ease" },
+};
+
+createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
