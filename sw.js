@@ -1,6 +1,5 @@
-/* uplog SW — index.html をキャッシュしてオフライン起動。CACHE名はビルドごとに自動更新 */
-const CACHE="uplog-202607040755";
-const ASSETS=["./","./index.html"];
-self.addEventListener("install",e=>{e.waitUntil(caches.open(CACHE).then(c=>Promise.allSettled(ASSETS.map(u=>c.add(u)))));self.skipWaiting();});
+/* uplog SW nf1 — ナビゲーションは network-first（オンラインなら常に最新）、オフラインはキャッシュ起動。以降このファイルの差し替えは不要 */
+const CACHE="uplog-nf1";
+self.addEventListener("install",e=>{e.waitUntil(caches.open(CACHE).then(c=>Promise.allSettled(["./","./index.html"].map(u=>c.add(new Request(u,{cache:"reload"}))))));self.skipWaiting();});
 self.addEventListener("activate",e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>caches.delete(k)))));self.clients.claim();});
-self.addEventListener("fetch",e=>{const req=e.request;if(req.method!=="GET")return;e.respondWith(caches.match(req).then(hit=>hit||fetch(req).then(res=>{const copy=res.clone();caches.open(CACHE).then(c=>{try{c.put(req,copy);}catch(_){}});return res;}).catch(()=>req.mode==="navigate"?caches.match("./index.html"):undefined)));});
+self.addEventListener("fetch",e=>{const req=e.request;if(req.method!=="GET")return;const nav=req.mode==="navigate"||req.url.endsWith("/index.html");if(nav){e.respondWith(fetch(req.url,{cache:"no-cache",credentials:"same-origin"}).then(res=>{const copy=res.clone();caches.open(CACHE).then(c=>{try{c.put("./index.html",copy);}catch(_){}});return res;}).catch(()=>caches.match("./index.html")));}else{e.respondWith(caches.match(req).then(hit=>hit||fetch(req).then(res=>{const copy=res.clone();caches.open(CACHE).then(c=>{try{c.put(req,copy);}catch(_){}});return res;}).catch(()=>void 0)));}});
